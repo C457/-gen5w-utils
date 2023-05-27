@@ -10,13 +10,10 @@ def patch_ExSLNavi(filepath, dest):
     hooked_func = hook.get_symbol("hooked_func")
     target_func = orig.get_symbol("printJNILog_JNI")
 
-    code_section = hook.section_from_virtual_address(hooked_func.value)
-    added_section = orig.add(code_section)
+    added_section = orig.add(hooked_func.section)
     rodata_section = orig.get_section(".rodata")
 
-    func_addr = added_section.virtual_address + (
-        hooked_func.value - code_section.virtual_address
-    )
+    func_addr = added_section.virtual_address 
 
     # checking
     expected_hex = [0x01, 0xD0]
@@ -45,7 +42,7 @@ def patch_ExSLNavi(filepath, dest):
 
     # patching JNI_Layer
     # JNI_HACKD
-    patch_hex = [0x4A, 0x4E, 0x49, 0x5F, 0x48, 0x41, 0x43, 0x4B, 0x44]
+    patch_hex = [0x4A, 0x4E, 0x49, 0x5F, 0x48, 0x41, 0x41, 0x4B, 0x44]
     orig.patch_address(rodata_section.virtual_address, patch_hex)
     orig.write(dest)
 
